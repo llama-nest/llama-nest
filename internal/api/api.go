@@ -20,6 +20,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/messages", s.messages)
 	mux.HandleFunc("/api/search", s.search)
 	mux.HandleFunc("/api/catch-up", s.catchUp)
+	mux.HandleFunc("/api/transfers", s.transfers)
+	mux.HandleFunc("/api/usage", s.usage)
+	mux.HandleFunc("/api/export", s.exportNest)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("llama-nest api is running\n"))
@@ -97,4 +100,31 @@ func (s *Server) catchUp(w http.ResponseWriter, r *http.Request) {
 		b.WriteString("- " + m.Role + ": " + c + "\n")
 	}
 	write(w, map[string]string{"brief": b.String()})
+}
+func (s *Server) transfers(w http.ResponseWriter, r *http.Request) {
+	x, err := s.Store.Transfers(50)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	write(w, x)
+}
+func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
+	x, err := s.Store.UsageSummary()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+
+	write(w, x)
+}
+func (s *Server) exportNest(w http.ResponseWriter, r *http.Request) {
+	x, err := s.Store.Export()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Disposition", `attachment; filename="llama-nest-context.nest"`)
+	write(w, x)
 }

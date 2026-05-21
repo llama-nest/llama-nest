@@ -4,7 +4,7 @@
 # binaries
 bin/
 dist/
-llama-nest
+/llama-nest
 
 # node
 node_modules/
