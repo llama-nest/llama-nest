@@ -150,11 +150,28 @@ func (s *Store) Status() (map[string]int64, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	msgs, err := s.readMessages()
 	if err != nil {
 		return nil, err
 	}
-	return map[string]int64{"sessions": int64(len(sessions)), "messages": int64(len(msgs))}, nil
+
+	transfers, err := s.readTransfers()
+	if err != nil {
+		return nil, err
+	}
+
+	usage, err := s.readUsage()
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]int64{
+		"sessions":  int64(len(sessions)),
+		"messages":  int64(len(msgs)),
+		"transfers": int64(len(transfers)),
+		"usage":     int64(len(usage)),
+	}, nil
 }
 func (s *Store) Sessions(limit int) ([]types.Session, error) {
 	xs, err := s.readSessions()
@@ -198,17 +215,233 @@ func (s *Store) Search(q string, limit int) ([]types.Message, error) {
 	return out, nil
 }
 func (s *Store) RecentMessages(limit int) ([]types.Message, error) {
-	xs, err := s.readMessages()
+	msgs, err := s.readMessages()
 	if err != nil {
 		return nil, err
 	}
-	if limit > 0 && len(xs) > limit {
-		xs = xs[len(xs)-limit:]
+
+	if limit <= 0 || limit > len(msgs) {
+		limit = len(msgs)
 	}
-	return xs, nil
+
+	start := len(msgs) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	return msgs[start:], nil
 }
 func reverseSessions(xs []types.Session) {
 	for i, j := 0, len(xs)-1; i < j; i, j = i+1, j-1 {
 		xs[i], xs[j] = xs[j], xs[i]
 	}
+}
+func (s *Store) transfersPath() string {
+	return filepath.Join(s.Dir, "transfers.jsonl")
+}
+func (s *Store) readTransfers() ([]types.Transfer, error) {
+	f, err := os.Open(s.transfersPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var out []types.Transfer
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024*10)
+
+	for sc.Scan() {
+		var x types.Transfer
+		if json.Unmarshal(sc.Bytes(), &x) == nil {
+			out = append(out, x)
+		}
+	}
+
+	return out, sc.Err()
+}
+func (s *Store) CreateTransfer(sourceModel, targetModel string, pack types.TransferPack, acknowledgement string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	transfers, err := s.readTransfers()
+	if err != nil {
+		return 0, err
+	}
+
+	x := types.Transfer{
+		ID:              int64(len(transfers) + 1),
+		SourceModel:     sourceModel,
+		TargetModel:     targetModel,
+		Pack:            pack,
+		Acknowledgement: acknowledgement,
+		CreatedAt:       time.Now().UTC(),
+	}
+
+	return x.ID, appendJSONL(s.transfersPath(), x)
+}
+func (s *Store) Transfers(limit int) ([]types.Transfer, error) {
+	xs, err := s.readTransfers()
+	if err != nil {
+		return nil, err
+	}
+
+	for i, j := 0, len(xs)-1; i < j; i, j = i+1, j-1 {
+		xs[i], xs[j] = xs[j], xs[i]
+	}
+
+	if limit > 0 && len(xs) > limit {
+		xs = xs[:limit]
+	}
+
+	return xs, nil
+}
+func (s *Store) usagePath() string {
+	return filepath.Join(s.Dir, "usage.jsonl")
+}
+func (s *Store) readUsage() ([]types.Usage, error) {
+	f, err := os.Open(s.usagePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var out []types.Usage
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024*10)
+
+	for sc.Scan() {
+		var x types.Usage
+		if json.Unmarshal(sc.Bytes(), &x) == nil {
+			out = append(out, x)
+		}
+	}
+
+	return out, sc.Err()
+}
+func (s *Store) CreateUsage(sessionID int64, model, endpoint string, promptTokens, completionTokens int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.readUsage()
+	if err != nil {
+		return 0, err
+	}
+
+	x := types.Usage{
+		ID:               int64(len(rows) + 1),
+		SessionID:        sessionID,
+		Model:            model,
+		Endpoint:         endpoint,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+		CreatedAt:        time.Now().UTC(),
+	}
+
+	return x.ID, appendJSONL(s.usagePath(), x)
+}
+func (s *Store) Usage(limit int) ([]types.Usage, error) {
+	xs, err := s.readUsage()
+	if err != nil {
+		return nil, err
+	}
+
+	for i, j := 0, len(xs)-1; i < j; i, j = i+1, j-1 {
+		xs[i], xs[j] = xs[j], xs[i]
+	}
+
+	if limit > 0 && len(xs) > limit {
+		xs = xs[:limit]
+	}
+
+	return xs, nil
+}
+func (s *Store) UsageSummary() (types.UsageSummary, error) {
+	rows, err := s.readUsage()
+	if err != nil {
+		return types.UsageSummary{}, err
+	}
+
+	summary := types.UsageSummary{}
+	byModel := map[string]*types.UsageByModel{}
+
+	for _, row := range rows {
+		summary.PromptTokens += row.PromptTokens
+		summary.CompletionTokens += row.CompletionTokens
+		summary.TotalTokens += row.TotalTokens
+
+		key := row.Model
+		if key == "" {
+			key = "unknown"
+		}
+
+		if _, ok := byModel[key]; !ok {
+			byModel[key] = &types.UsageByModel{Model: key}
+		}
+
+		byModel[key].PromptTokens += row.PromptTokens
+		byModel[key].CompletionTokens += row.CompletionTokens
+		byModel[key].TotalTokens += row.TotalTokens
+	}
+
+	for _, v := range byModel {
+		summary.ByModel = append(summary.ByModel, *v)
+	}
+
+	return summary, nil
+}
+func (s *Store) Export() (types.NestExport, error) {
+	sessions, err := s.readSessions()
+	if err != nil {
+		return types.NestExport{}, err
+	}
+
+	messages, err := s.readMessages()
+	if err != nil {
+		return types.NestExport{}, err
+	}
+
+	transfers, err := s.readTransfers()
+	if err != nil {
+		return types.NestExport{}, err
+	}
+
+	usage, err := s.readUsage()
+	if err != nil {
+		return types.NestExport{}, err
+	}
+
+	return types.NestExport{
+		Version:    "0.1",
+		ExportedAt: time.Now().UTC(),
+		Sessions:   sessions,
+		Messages:   messages,
+		Transfers:  transfers,
+		Usage:      usage,
+	}, nil
+}
+func (s *Store) Wipe() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	paths := []string{
+		s.sessionsPath(),
+		s.messagesPath(),
+		s.transfersPath(),
+		s.usagePath(),
+	}
+
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	return nil
 }
