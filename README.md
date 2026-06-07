@@ -249,16 +249,14 @@ The long-term goal is portable conversational infrastructure across machines and
 
 # Quick start
 
-Prerequisite:
+## Prerequisites
 
-- Ollama installed
-- Ollama running locally on port `11434`
+- **Ollama installed** ([Install Ollama](https://ollama.ai/))
+- **Single Ollama instance** running on port `11434` (see below for important note)
+- Go 1.22+ installed
+- Node.js 18+ (for UI, optional)
 
-Start Ollama:
-
-```bash
-ollama serve
-```
+## Setup
 
 Clone and build:
 
@@ -275,33 +273,83 @@ Initialize local storage:
 ./bin/llama-nest init
 ```
 
-Start the local sidecar:
+## Running llama-nest
+
+`llama-nest` requires **three components running simultaneously**. Open three separate terminal windows and follow the steps in order:
+
+⚠️ **All three terminals must be active at the same time for llama-nest to work.** If you skip any step or close a terminal, you'll get `connection refused` errors.
+
+### Terminal 1: Ollama (must be running, but only one instance)
+
+**IMPORTANT:** You must have **exactly one Ollama instance running** on port `11434`. Do not start multiple Ollama processes.
+
+Check if Ollama is already running:
+
+```bash
+lsof -i :11434
+```
+
+If nothing is shown, start Ollama:
+
+```bash
+ollama serve
+```
+
+If the command fails with `address already in use`, Ollama is already running (either in another terminal or as a background service). In this case, you can skip this step and proceed to Terminal 2.
+
+**On macOS:** Ollama may be running as a background service via the menu bar or LaunchAgent. You can:
+- Keep it running and proceed to Terminal 2
+- Or quit it first (if you want to restart it in a terminal)
+
+### Terminal 2: Start llama-nest proxy
+
+**CRITICAL:** You must start llama-nest server before running any commands in Terminal 3.
 
 ```bash
 ./bin/llama-nest start
 ```
 
-The API server runs on:
+This starts:
+- **Proxy server** on `http://localhost:11435` (proxies requests to Ollama)
+- **API server** on `http://localhost:8787` (manages local memory and context)
 
-```text
-http://localhost:8787
+**Verify the server is running:**
+
+```bash
+lsof -i :11435
 ```
 
-The proxy runs on:
+You should see `llama-nest` listening on port 11435. If nothing appears, the server failed to start—check the terminal output for errors.
 
-```text
-http://localhost:11435
+### Terminal 3: Pull models and use llama-nest commands
+
+Before running interactive chat, pull the model you want to use:
+
+```bash
+ollama pull llama3.2
 ```
+
+Now you can run interactive chat, transfers, or other commands:
+
+```bash
+./bin/llama-nest run llama3.2
+```
+
+**Important:** The llama-nest server must be running (Terminal 2) before you use any commands.
 
 ---
 
 # Using llama-nest
+
+**Note:** All commands below assume the llama-nest server is running (`./bin/llama-nest start` in Terminal 2). If you see `connection refused` errors, start the server first.
 
 ## Interactive chat
 
 ```bash
 ./bin/llama-nest run llama3.2
 ```
+
+Routes your chat through the llama-nest proxy so conversations and context are captured.
 
 ---
 
@@ -311,6 +359,8 @@ http://localhost:11435
 ./bin/llama-nest search "cookies"
 ```
 
+Search all captured messages and sessions for relevant context.
+
 ---
 
 ## Generate catch-up brief
@@ -318,6 +368,8 @@ http://localhost:11435
 ```bash
 ./bin/llama-nest catch-up
 ```
+
+Generate a summary of recent conversation context to restore continuity.
 
 ---
 
@@ -327,6 +379,8 @@ http://localhost:11435
 ./bin/llama-nest transfer tinyllama
 ```
 
+Move recent conversational context to another model, with automatic model pulling.
+
 ---
 
 ## View usage
@@ -334,6 +388,8 @@ http://localhost:11435
 ```bash
 ./bin/llama-nest usage
 ```
+
+View token usage across all captured sessions.
 
 ---
 
@@ -343,6 +399,8 @@ http://localhost:11435
 ./bin/llama-nest export
 ```
 
+Export all captured conversational state into a portable `.nest` bundle.
+
 ---
 
 ## Wipe local memory
@@ -351,12 +409,154 @@ http://localhost:11435
 ./bin/llama-nest wipe --yes
 ```
 
+Permanently delete all captured local memory and context.
+
 ---
 
 ## Stop llama-nest
 
 ```bash
 ./bin/llama-nest stop
+```
+
+Stop the proxy and API servers.
+
+---
+
+## Health check and diagnostics
+
+```bash
+./bin/llama-nest doctor
+```
+
+Comprehensive health check that verifies:
+- Ollama is running and reachable
+- Models are available locally
+- llama-nest proxy is running
+- llama-nest API is running
+
+Shows exactly what to fix if something is missing.
+
+---
+
+# Troubleshooting
+
+## "address already in use" on port 11434
+
+```
+Error: listen tcp 127.0.0.1:11434: bind: address already in use
+```
+
+**Solution:** Ollama is already running. Check:
+
+```bash
+lsof -i :11434
+```
+
+You have two options:
+
+1. **Use the existing Ollama instance** (recommended) — Skip the `ollama serve` step and proceed directly to starting llama-nest
+2. **Kill the existing process and restart:**
+   ```bash
+   kill -9 <PID>
+   ollama serve
+   ```
+
+On macOS, Ollama may be running as a background service or in the menu bar. You can quit it from the menu or use `kill`.
+
+---
+
+## "connection refused" on port 11435
+
+```
+error: llama-nest server is not running
+
+Fix: Run this in another terminal:
+  ./bin/llama-nest start
+
+Then come back and try again
+```
+
+**Solution:** The llama-nest server is not running.
+
+Make sure you have started llama-nest in Terminal 2:
+
+```bash
+./bin/llama-nest start
+```
+
+All commands (like `./bin/llama-nest run llama3.2`) require the proxy server to be running.
+
+Alternatively, run the health check to see what's missing:
+
+```bash
+./bin/llama-nest doctor
+```
+
+---
+
+## Model not found / "pulling model"
+
+If you see errors about a missing model, pull it first using Ollama:
+
+```bash
+ollama pull llama3.2
+```
+
+Make sure the model is available locally before running `./bin/llama-nest run <model>`.
+
+---
+
+## "llama-nest already running" but server won't start
+
+```
+error: llama-nest already running
+```
+
+This usually means the PID file is stale (the previous process crashed or was killed). The app now automatically detects this and cleans up stale PID files.
+
+Try starting again:
+
+```bash
+./bin/llama-nest start
+```
+
+If it still fails, you can manually clean up:
+
+```bash
+rm ~/.llama-nest/llama-nest.pid
+./bin/llama-nest start
+```
+
+---
+
+## Verify your setup
+
+Use the built-in health check:
+
+```bash
+./bin/llama-nest doctor
+```
+
+This automatically checks:
+- ✓ Ollama is running and reachable
+- ✓ Models are available locally
+- ✓ llama-nest proxy is running
+- ✓ llama-nest API is running
+
+It will tell you exactly what to fix if anything is missing.
+
+Alternatively, check manually:
+
+```bash
+# Check Ollama (port 11434)
+lsof -i :11434
+
+# Check llama-nest proxy (port 11435)
+lsof -i :11435
+
+# Check llama-nest API (port 8787)
+lsof -i :8787
 ```
 
 ---

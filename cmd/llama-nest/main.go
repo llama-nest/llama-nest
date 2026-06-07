@@ -89,6 +89,18 @@ func runChat(args []string) error {
 	}
 
 	model := strings.TrimSpace(args[0])
+
+	// Check if llama-nest server is running
+	proxyURL := c.ProxyAddr
+	if strings.HasPrefix(proxyURL, ":") {
+		proxyURL = "localhost" + proxyURL
+	}
+	resp, err := http.Get("http://" + proxyURL + "/api/tags")
+	if err != nil {
+		return fmt.Errorf("llama-nest server is not running\n\nFix: Run this in another terminal:\n  ./bin/llama-nest start\n\nThen come back and try again")
+	}
+	resp.Body.Close()
+
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("llama-nest chat")
@@ -134,18 +146,13 @@ func runChat(args []string) error {
 			return err
 		}
 
-		proxyURL := c.ProxyAddr
-		if strings.HasPrefix(proxyURL, ":") {
-			proxyURL = "localhost" + proxyURL
-		}
-
 		resp, err := http.Post(
 			"http://"+proxyURL+"/api/chat",
 			"application/json",
 			bytes.NewReader(reqBody),
 		)
 		if err != nil {
-			return err
+			return fmt.Errorf("connection failed: %v\n\nMake sure llama-nest is running:\n  ./bin/llama-nest start", err)
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -272,9 +279,26 @@ func runStart() error {
 		return err
 	}
 	pidPath := filepath.Join(c.DataDir, "llama-nest.pid")
-	if _, err := os.Stat(pidPath); err == nil {
-		return fmt.Errorf("llama-nest already running")
+
+	// Check for stale PID file and clean it up
+	if b, err := os.ReadFile(pidPath); err == nil {
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				if err := p.Signal(os.Signal(nil)); err != nil {
+					// Process doesn't exist, remove stale PID file
+					os.Remove(pidPath)
+				} else {
+					// Process is actually running
+					return fmt.Errorf("llama-nest already running (PID %d)\nTo stop it, run: ./bin/llama-nest stop", pid)
+				}
+			} else {
+				// Can't find process, remove stale PID file
+				os.Remove(pidPath)
+			}
+		}
 	}
+
 	_ = os.WriteFile(
 		pidPath,
 		[]byte(strconv.Itoa(os.Getpid())),
@@ -284,12 +308,12 @@ func runStart() error {
 	ollamaClient := ollama.New(c.OllamaURL)
 	if err := ollamaClient.Healthy(); err != nil {
 		fmt.Println()
-		fmt.Println("WARNING: Ollama does not appear to be running.")
+		fmt.Println("⚠️  WARNING: Ollama is not running on", c.OllamaURL)
 		fmt.Println()
-		fmt.Println("Start Ollama first:")
+		fmt.Println("To start Ollama, run in another terminal:")
 		fmt.Println("  ollama serve")
 		fmt.Println()
-		fmt.Println("llama-nest will still start, but model traffic will fail until Ollama is available.")
+		fmt.Println("llama-nest will start, but commands will fail until Ollama is available.")
 		fmt.Println()
 	}
 	apiSrv := api.New(s)
@@ -416,14 +440,69 @@ func runDoctor() error {
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("🔍 llama-nest health check")
+	fmt.Println()
+
+	// Check Ollama
+	fmt.Print("Checking Ollama on ", c.OllamaURL, "... ")
 	resp, err := http.Get(c.OllamaURL + "/api/tags")
 	if err != nil {
-		fmt.Println("ollama: not reachable -", err)
+		fmt.Println("❌ NOT RUNNING")
+		fmt.Println("\nFix: Start Ollama in another terminal:")
+		fmt.Println("  ollama serve")
 		return nil
 	}
 	defer resp.Body.Close()
-	fmt.Println("ollama: reachable", resp.Status)
-	fmt.Println("llama-nest: ok")
+	fmt.Println("✓ running")
+
+	// Parse models from Ollama
+	var ollamaResp struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	json.Unmarshal(respBody, &ollamaResp)
+
+	if len(ollamaResp.Models) > 0 {
+		fmt.Println("\nAvailable models:")
+		for _, m := range ollamaResp.Models {
+			fmt.Println("  •", m.Name)
+		}
+	} else {
+		fmt.Println("\n⚠️  No models downloaded yet.")
+		fmt.Println("Pull a model first:")
+		fmt.Println("  ollama pull llama3.2")
+	}
+
+	// Check llama-nest server
+	proxyURL := c.ProxyAddr
+	if strings.HasPrefix(proxyURL, ":") {
+		proxyURL = "localhost" + proxyURL
+	}
+	fmt.Print("\nChecking llama-nest proxy on ", proxyURL, "... ")
+	resp, err = http.Get("http://" + proxyURL + "/api/tags")
+	if err != nil {
+		fmt.Println("❌ NOT RUNNING")
+		fmt.Println("\nFix: Start llama-nest in another terminal:")
+		fmt.Println("  ./bin/llama-nest start")
+	} else {
+		resp.Body.Close()
+		fmt.Println("✓ running")
+	}
+
+	// Check API server
+	fmt.Print("Checking llama-nest API on ", c.APIAddr, "... ")
+	resp, err = http.Get("http://" + c.APIAddr + "/api/health")
+	if err != nil {
+		fmt.Println("❌ NOT RUNNING")
+	} else {
+		resp.Body.Close()
+		fmt.Println("✓ running")
+	}
+
+	fmt.Println("\n✅ Setup complete. Ready to use llama-nest!")
 	return nil
 }
 func trim(s string, n int) string {
